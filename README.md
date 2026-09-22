@@ -12,7 +12,7 @@
 - تشخیص خودکار اتصال و جداسازی حافظهٔ USB
 - نمایش ظرفیت، برند و مدل، پارتیشن‌ها، فایل‌سیستم و سرعت واقعی ارتباط USB
 - امکان ساخت مستقل سواپ، افزایش فلش دستگاه یا هر دو
-- تعیین اندازه بر حسب MiB با فیلد عددی و پیشنهاد خودکار فضای باقی‌مانده برای افزایش فلش دستگاه
+- تعیین اندازه بر حسب مگابایت با فیلد عددی و پیشنهاد خودکار فضای باقی‌مانده برای افزایش فلش دستگاه
 - ثبت تنظیمات بر اساس UUID برای حفظ شدن پس از خاموش و روشن شدن روتر
 - حذف امن با جلوگیری از جداسازی دیسک مشغول
 - نمایش مدل روتر، نسخهٔ OpenWrt، معماری CPU، فلش داخلی، فضای overlay، RAM و swap
@@ -49,7 +49,7 @@ command -v apk || command -v opkg
 
 ```sh
 opkg update
-opkg install /tmp/luci-app-afzoon_1.0.1-r1_all.ipk
+opkg install /tmp/luci-app-afzoon_1.0.2-r1_all.ipk
 /etc/init.d/rpcd restart
 /etc/init.d/uhttpd restart
 ```
@@ -69,7 +69,7 @@ opkg install kmod-usb-storage kmod-fs-ext4
 
 ```sh
 apk update
-apk add --allow-untrusted /tmp/luci-app-afzoon-1.0.1-r1.apk
+apk add --allow-untrusted /tmp/luci-app-afzoon-1.0.2-r1.apk
 /etc/init.d/rpcd restart
 /etc/init.d/uhttpd restart
 ```
@@ -97,7 +97,7 @@ apk add --allow-untrusted /tmp/luci-app-afzoon-1.0.1-r1.apk
 
 1. فلش صحیح را انتخاب کنید.
 2. گزینهٔ **Create persistent swap** را فعال کنید.
-3. اندازهٔ موردنظر را بر حسب MiB وارد کنید.
+3. اندازهٔ موردنظر را بر حسب مگابایت وارد کنید.
 4. گزینهٔ افزایش فلش دستگاه را غیرفعال بگذارید.
 5. **Apply changes** را بزنید و پاک‌شدن کامل فلش را تأیید کنید.
 
@@ -215,7 +215,7 @@ Afzoon is a bilingual LuCI application for managing USB storage, persistent swap
 - Automatic detection of connected and disconnected USB mass-storage devices
 - USB capacity, vendor/model, file-system, partition, negotiated speed, and USB-generation display
 - Independent creation of swap, extroot, or both
-- Numeric size controls in MiB and an automatic extroot suggestion based on remaining capacity
+- Numeric size controls in MB and an automatic extroot suggestion based on remaining capacity
 - Persistent UUID-based configuration across router restarts
 - Safe-removal control with busy-device protection
 - Router model, OpenWrt version, CPU architecture, internal/extended storage, RAM, swap, and virtual-memory charts
@@ -252,7 +252,7 @@ Copy the downloaded IPK file to `/tmp` on the router with SCP, WinSCP, or LuCI's
 
 ```sh
 opkg update
-opkg install /tmp/luci-app-afzoon_1.0.1-r1_all.ipk
+opkg install /tmp/luci-app-afzoon_1.0.2-r1_all.ipk
 /etc/init.d/rpcd restart
 /etc/init.d/uhttpd restart
 ```
@@ -272,7 +272,7 @@ Copy the downloaded APK file to `/tmp` on the router, connect through SSH, and r
 
 ```sh
 apk update
-apk add --allow-untrusted /tmp/luci-app-afzoon-1.0.1-r1.apk
+apk add --allow-untrusted /tmp/luci-app-afzoon-1.0.2-r1.apk
 /etc/init.d/rpcd restart
 /etc/init.d/uhttpd restart
 ```
@@ -303,7 +303,7 @@ Afzoon reports the speed negotiated by the router and device. For example, a USB
 
 1. Select the correct USB device.
 2. Enable **Create persistent swap**.
-3. Enter the required size in MiB with the number box or its up/down controls.
+3. Enter the required size in MB with the number box or its up/down controls.
 4. Leave extroot disabled.
 5. Read the erase warning and press **Apply changes**.
 6. Confirm the selected device when prompted.
@@ -314,7 +314,7 @@ Afzoon recreates the USB partition table, creates the swap partition, records it
 
 1. Select the correct USB device.
 2. Enable **Create persistent extroot**.
-3. Accept the suggested remaining capacity or enter a smaller size in MiB.
+3. Accept the suggested remaining capacity or enter a smaller size in MB.
 4. Leave swap disabled.
 5. Press **Apply changes** and confirm the erase warning.
 6. Wait until Afzoon reports that preparation has completed.

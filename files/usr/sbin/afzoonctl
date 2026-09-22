@@ -57,18 +57,35 @@ device_json() {
 system_json() {
 	board=$(ubus call system board 2>/dev/null)
 	model=$(echo "$board" | jsonfilter -e '@.model' 2>/dev/null); release=$(echo "$board" | jsonfilter -e '@.release.description' 2>/dev/null)
-	arch=$(uname -m); mem=$(awk '/MemTotal:/ {print int($2/1024)}' /proc/meminfo); swp=$(awk '/SwapTotal:/ {print int($2/1024)}' /proc/meminfo)
-	overlay=$(df -k /overlay 2>/dev/null | awk 'NR==2 {print int($2/1024)}'); [ -n "$overlay" ] || overlay=0
+	target=$(echo "$board" | jsonfilter -e '@.release.target' 2>/dev/null)
+	[ -n "$target" ] || target=$(sed -n "s/^DISTRIB_TARGET=['\"]\([^'\"]*\).*/\1/p" /etc/openwrt_release 2>/dev/null)
+	arch=$(uname -m)
+	mem=$(awk '/MemTotal:/ {printf "%.2f", $2/1024}' /proc/meminfo)
+	mem_available=$(awk '/MemAvailable:/ {printf "%.2f", $2/1024}' /proc/meminfo)
+	mem_used=$(awk '/MemTotal:/ {t=$2} /^MemFree:/ {f=$2} END {printf "%.2f", (t-f)/1024}' /proc/meminfo)
+	mem_buffered=$(awk '/^Buffers:/ {printf "%.2f", $2/1024}' /proc/meminfo)
+	mem_cached=$(awk '/^Cached:/ {printf "%.2f", $2/1024}' /proc/meminfo)
+	swp=$(awk '/SwapTotal:/ {printf "%.2f", $2/1024}' /proc/meminfo)
+	swp_free=$(awk '/SwapFree:/ {printf "%.2f", $2/1024}' /proc/meminfo)
+	swp_used=$(awk '/SwapTotal:/ {t=$2} /SwapFree:/ {f=$2} END {printf "%.2f", (t-f)/1024}' /proc/meminfo)
+	overlay=$(df -k /overlay 2>/dev/null | awk 'NR==2 {printf "%.2f", $2/1024}'); [ -n "$overlay" ] || overlay=0
+	overlay_used=$(df -k /overlay 2>/dev/null | awk 'NR==2 {printf "%.2f", $3/1024}'); [ -n "$overlay_used" ] || overlay_used=0
+	tmp_total=$(df -k /tmp 2>/dev/null | awk 'NR==2 {printf "%.2f", $2/1024}'); [ -n "$tmp_total" ] || tmp_total=0
+	tmp_used=$(df -k /tmp 2>/dev/null | awk 'NR==2 {printf "%.2f", $3/1024}'); [ -n "$tmp_used" ] || tmp_used=0
 	internal=$(uci -q get afzoon.main.internal_overlay_mib); [ -n "$internal" ] || internal=$overlay
-	printf '{"model":"%s","openwrt":"%s","architecture":"%s","internal_flash_mib":%s,"active_overlay_mib":%s,"ram_mib":%s,"swap_mib":%s,"virtual_memory_mib":%s}' \
-		"$(json_quote "${model:-Unknown}")" "$(json_quote "${release:-Unknown}")" "$(json_quote "$arch")" "$internal" "$overlay" "${mem:-0}" "${swp:-0}" "$(( ${mem:-0} + ${swp:-0} ))"
+	overlay_source=$(awk '$2=="/overlay" {print $1}' /proc/mounts | head -n1)
+	case "$overlay_source" in /dev/sd*|/dev/mmcblk*|/dev/nvme*) extroot=$overlay; extroot_used=$overlay_used;; *) extroot=0; extroot_used=0;; esac
+	internal_used=$overlay_used; [ "$extroot" = 0 ] || internal_used=0
+	virtual=$(awk -v m="${mem:-0}" -v s="${swp:-0}" 'BEGIN {printf "%.2f", m+s}')
+	printf '{"model":"%s","openwrt":"%s","architecture":"%s","target_platform":"%s","internal_flash_mib":%s,"internal_flash_used_mib":%s,"active_overlay_mib":%s,"extroot_mib":%s,"extroot_used_mib":%s,"tmp_mib":%s,"tmp_used_mib":%s,"ram_mib":%s,"ram_available_mib":%s,"ram_used_mib":%s,"ram_buffered_mib":%s,"ram_cached_mib":%s,"swap_mib":%s,"swap_used_mib":%s,"virtual_memory_mib":%s}' \
+		"$(json_quote "${model:-Unknown}")" "$(json_quote "${release:-Unknown}")" "$(json_quote "$arch")" "$(json_quote "${target:-Unknown}")" "$internal" "$internal_used" "$overlay" "$extroot" "$extroot_used" "$tmp_total" "$tmp_used" "${mem:-0}" "${mem_available:-0}" "${mem_used:-0}" "${mem_buffered:-0}" "${mem_cached:-0}" "${swp:-0}" "${swp_used:-0}" "$virtual"
 }
 
 status() {
 	devices=''; first=1
 	for x in /sys/block/sd*; do [ -e "$x" ] || continue; b=$(basename "$x"); usb_block "/dev/$b" || continue; [ $first -eq 1 ] || devices="$devices,"; first=0; devices="$devices$(device_json "$b")"; done
 	lang=$(uci -q get afzoon.main.language); [ -n "$lang" ] || lang=en
-	printf '{"version":"1.0.1","language":"%s","system":%s,"devices":[%s],"last_event":"%s"}\n' "$(json_quote "$lang")" "$(system_json)" "$devices" "$(json_quote "$(cat "$STATE_DIR/event" 2>/dev/null)")"
+	printf '{"version":"1.0.2","language":"%s","system":%s,"devices":[%s],"last_event":"%s"}\n' "$(json_quote "$lang")" "$(system_json)" "$devices" "$(json_quote "$(cat "$STATE_DIR/event" 2>/dev/null)")"
 }
 
 set_fstab() {
