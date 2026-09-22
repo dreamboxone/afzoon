@@ -1,0 +1,5 @@
+#!/bin/sh
+[ -x /usr/sbin/afzoonctl ] || exit 0
+case "$ACTION" in
+	add|remove|change) /usr/sbin/afzoonctl hotplug "$ACTION" "$DEVNAME" >/dev/null 2>&1 ;;
+esac

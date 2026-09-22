@@ -1,0 +1,20 @@
+{
+  "luci-app-afzoon": {
+    "description": "Grant Afzoon LuCI page access to its local management command",
+    "read": {
+      "ubus": {
+        "session": [ "access" ],
+        "file": [ "exec" ]
+      }
+    },
+    "write": {
+      "cgi-io": [ "exec" ],
+      "ubus": {
+        "file": [ "exec" ]
+      },
+      "file": {
+        "/usr/sbin/afzoonctl": [ "exec" ]
+      }
+    }
+  }
+}

@@ -1,0 +1,142 @@
+#!/bin/sh
+# Afzoon local storage manager. All destructive work is explicitly requested by LuCI.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+STATE_DIR=/var/run/afzoon
+STATE_FILE=$STATE_DIR/status.json
+mkdir -p "$STATE_DIR"
+
+json_quote() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\n/ /g'; }
+is_uint() { case "$1" in ''|*[!0-9]*) return 1;; *) return 0;; esac; }
+dev_base() { basename "$1" | sed 's/[0-9]*$//'; }
+block_value() { block info "$1" 2>/dev/null | sed -n "s/.* $2=\"\([^\"]*\)\".*/\1/p" | head -n1; }
+
+usb_block() {
+	b=$(dev_base "$1")
+	[ -b "/dev/$b" ] || return 1
+	p=$(readlink -f "/sys/class/block/$b/device" 2>/dev/null) || return 1
+	echo "$p" | grep -q '/usb[0-9]'
+}
+
+usb_speed() {
+	b=$(dev_base "$1"); p=$(readlink -f "/sys/class/block/$b/device" 2>/dev/null)
+	while [ -n "$p" ] && [ "$p" != / ]; do
+		if [ -r "$p/speed" ]; then cat "$p/speed"; return; fi
+		p=$(dirname "$p")
+	done
+	echo 0
+}
+
+usb_generation() {
+	s=$(usb_speed "$1" | cut -d. -f1)
+	is_uint "$s" || s=0
+	if [ "$s" -ge 20000 ]; then echo 'USB 3.2 (20 Gbit/s)'
+	elif [ "$s" -ge 10000 ]; then echo 'USB 3.1/3.2 (10 Gbit/s)'
+	elif [ "$s" -ge 5000 ]; then echo 'USB 3.0 (5 Gbit/s)'
+	elif [ "$s" -ge 480 ]; then echo 'USB 2.0 (480 Mbit/s)'
+	elif [ "$s" -gt 0 ]; then echo 'USB 1.x'
+	else echo 'Unknown'; fi
+}
+
+device_json() {
+	b=$1; dev=/dev/$b; sys=/sys/block/$b/device
+	[ -b "$dev" ] || return
+	size=$(cat "/sys/block/$b/size" 2>/dev/null); is_uint "$size" || size=0; mib=$((size / 2048))
+	brand="$(cat "$sys/vendor" 2>/dev/null) $(cat "$sys/model" 2>/dev/null)"; brand=$(echo "$brand" | sed 's/^ *//;s/ *$//')
+	parts=''; first=1
+	for p in /sys/block/$b/$b*; do
+		[ -e "$p" ] || continue; n=$(basename "$p"); [ "$n" = "$b" ] && continue
+		fs=$(block_value "/dev/$n" TYPE); uuid=$(block_value "/dev/$n" UUID)
+		ps=$(cat "$p/size" 2>/dev/null); is_uint "$ps" || ps=0
+		[ $first -eq 1 ] || parts="$parts,"; first=0
+		parts="$parts{\"name\":\"$(json_quote "$n")\",\"size_mib\":$((ps / 2048)),\"filesystem\":\"$(json_quote "${fs:-unknown}")\",\"uuid\":\"$(json_quote "$uuid")\"}"
+	done
+	printf '{"name":"%s","path":"%s","size_mib":%s,"brand":"%s","usb":"%s","speed_mbps":"%s","partitions":[%s]}' \
+		"$(json_quote "$b")" "$dev" "$mib" "$(json_quote "${brand:-Unknown}")" "$(usb_generation "$dev")" "$(json_quote "$(usb_speed "$dev")")" "$parts"
+}
+
+system_json() {
+	board=$(ubus call system board 2>/dev/null)
+	model=$(echo "$board" | jsonfilter -e '@.model' 2>/dev/null); release=$(echo "$board" | jsonfilter -e '@.release.description' 2>/dev/null)
+	arch=$(uname -m); mem=$(awk '/MemTotal:/ {print int($2/1024)}' /proc/meminfo); swp=$(awk '/SwapTotal:/ {print int($2/1024)}' /proc/meminfo)
+	overlay=$(df -k /overlay 2>/dev/null | awk 'NR==2 {print int($2/1024)}'); [ -n "$overlay" ] || overlay=0
+	internal=$(uci -q get afzoon.main.internal_overlay_mib); [ -n "$internal" ] || internal=$overlay
+	printf '{"model":"%s","openwrt":"%s","architecture":"%s","internal_flash_mib":%s,"active_overlay_mib":%s,"ram_mib":%s,"swap_mib":%s,"virtual_memory_mib":%s}' \
+		"$(json_quote "${model:-Unknown}")" "$(json_quote "${release:-Unknown}")" "$(json_quote "$arch")" "$internal" "$overlay" "${mem:-0}" "${swp:-0}" "$(( ${mem:-0} + ${swp:-0} ))"
+}
+
+status() {
+	devices=''; first=1
+	for x in /sys/block/sd*; do [ -e "$x" ] || continue; b=$(basename "$x"); usb_block "/dev/$b" || continue; [ $first -eq 1 ] || devices="$devices,"; first=0; devices="$devices$(device_json "$b")"; done
+	lang=$(uci -q get afzoon.main.language); [ -n "$lang" ] || lang=en
+	printf '{"version":"1.0.0","language":"%s","system":%s,"devices":[%s],"last_event":"%s"}\n' "$(json_quote "$lang")" "$(system_json)" "$devices" "$(json_quote "$(cat "$STATE_DIR/event" 2>/dev/null)")"
+}
+
+set_fstab() {
+	dev=$1; swap_uuid=$2; root_uuid=$3
+	uci -q delete fstab.afzoon_swap
+	uci -q delete fstab.afzoon_extroot
+	[ -n "$swap_uuid" ] && { uci -q delete fstab.afzoon_swap; uci set fstab.afzoon_swap=swap; uci set fstab.afzoon_swap.uuid="$swap_uuid"; uci set fstab.afzoon_swap.enabled='1'; }
+	[ -n "$root_uuid" ] && { uci -q delete fstab.afzoon_extroot; uci set fstab.afzoon_extroot=mount; uci set fstab.afzoon_extroot.uuid="$root_uuid"; uci set fstab.afzoon_extroot.target='/overlay'; uci set fstab.afzoon_extroot.fstype='ext4'; uci set fstab.afzoon_extroot.options='rw,noatime'; uci set fstab.afzoon_extroot.enabled='1'; uci set fstab.afzoon_extroot.is_rootfs='1'; }
+	uci commit fstab
+}
+
+apply() {
+	dev=$1; swap_mib=$2; root_mib=$3
+	usb_block "$dev" || { echo '{"ok":false,"error":"USB device not found"}'; return 1; }
+	awk '$2=="/overlay" {print $1}' /proc/mounts | grep -q "$(dev_base "$dev")" && { echo '{"ok":false,"error":"Active extroot: reboot from internal storage before repartitioning"}'; return 1; }
+	is_uint "$swap_mib" && is_uint "$root_mib" || { echo '{"ok":false,"error":"Invalid size"}'; return 1; }
+	[ "$swap_mib" -gt 0 ] || [ "$root_mib" -gt 0 ] || { echo '{"ok":false,"error":"Choose swap and/or extroot"}'; return 1; }
+	b=$(dev_base "$dev"); sectors=$(cat "/sys/block/$b/size"); total=$((sectors / 2048)); used=$((swap_mib + root_mib))
+	[ "$used" -le $((total - 16)) ] || { echo '{"ok":false,"error":"Requested space exceeds device capacity"}'; return 1; }
+	command -v parted >/dev/null || { echo '{"ok":false,"error":"parted is required"}'; return 1; }
+	command -v mkfs.ext4 >/dev/null || { echo '{"ok":false,"error":"e2fsprogs is required"}'; return 1; }
+	# This command intentionally erases the selected USB disk; UI confirmation is mandatory.
+	swapoff "${dev}"* 2>/dev/null; umount "${dev}"* 2>/dev/null
+	parted -s "$dev" mklabel gpt || { echo '{"ok":false,"error":"Partition table creation failed"}'; return 1; }
+	start=1; n=1; root_part=''; swap_part=''
+	if [ "$root_mib" -gt 0 ]; then end=$((start + root_mib)); parted -s "$dev" mkpart primary ext4 "${start}MiB" "${end}MiB" || return 1; root_part="${dev}${n}"; n=$((n+1)); start=$end; fi
+	if [ "$swap_mib" -gt 0 ]; then end=$((start + swap_mib)); parted -s "$dev" mkpart primary linux-swap "${start}MiB" "${end}MiB" || return 1; swap_part="${dev}${n}"; fi
+	partprobe "$dev" 2>/dev/null; sleep 2
+	[ -z "$root_part" ] || mkfs.ext4 -F -L afzoon-extroot "$root_part" || { echo '{"ok":false,"error":"Extroot formatting failed"}'; return 1; }
+	[ -z "$swap_part" ] || mkswap -L afzoon-swap "$swap_part" || { echo '{"ok":false,"error":"Swap formatting failed"}'; return 1; }
+	root_uuid=''; swap_uuid=''
+	[ -n "$root_part" ] && root_uuid=$(block_value "$root_part" UUID)
+	[ -n "$swap_part" ] && swap_uuid=$(block_value "$swap_part" UUID)
+	[ -n "$root_uuid" ] || [ -z "$root_part" ] || { echo '{"ok":false,"error":"Extroot formatting failed"}'; return 1; }
+	[ -n "$swap_uuid" ] || [ -z "$swap_part" ] || { echo '{"ok":false,"error":"Swap formatting failed"}'; return 1; }
+	uci set afzoon.main.internal_overlay_mib="$(df -k /overlay | awk 'NR==2 {print int($2/1024)}')"; uci commit afzoon
+	set_fstab "$dev" "$swap_uuid" "$root_uuid"
+	if [ -n "$root_part" ]; then mkdir -p /tmp/afzoon-extroot; mount "$root_part" /tmp/afzoon-extroot || { echo '{"ok":false,"error":"Cannot mount new extroot"}'; return 1; }; tar -C /overlay -cpf - . | tar -C /tmp/afzoon-extroot -xpf -; sync; umount /tmp/afzoon-extroot; fi
+	[ -n "$swap_part" ] && swapon "$swap_part"
+	printf '{"ok":true,"reboot_required":%s}\n' "$([ -n "$root_part" ] && echo true || echo false)"
+}
+
+safe_remove() {
+	dev=$1; usb_block "$dev" || { echo '{"ok":false,"error":"USB device not found"}'; return 1; }
+	awk '$2=="/overlay" {print $1}' /proc/mounts | grep -q "$(dev_base "$dev")" && { echo '{"ok":false,"error":"Active extroot: disable it and reboot before removal"}'; return 1; }
+	swapoff "${dev}"* 2>/dev/null
+	grep -q "^${dev}" /proc/swaps 2>/dev/null && { echo '{"ok":false,"error":"Swap is still busy"}'; return 1; }
+	for p in "${dev}"*; do
+		grep -q "^$p " /proc/mounts 2>/dev/null || continue
+		umount "$p" 2>/dev/null || { echo '{"ok":false,"error":"A filesystem is still busy"}'; return 1; }
+	done
+	sync
+	b=$(dev_base "$dev"); [ -w "/sys/block/$b/device/delete" ] && echo 1 > "/sys/block/$b/device/delete"
+	echo '{"ok":true}'
+}
+
+disable_extroot() {
+	uci -q delete fstab.afzoon_extroot
+	uci commit fstab
+	echo '{"ok":true,"reboot_required":true}'
+}
+
+case "$1" in
+	status) status | tee "$STATE_FILE" ;;
+	hotplug) printf '%s %s\n' "$2" "$3" > "$STATE_DIR/event"; status > "$STATE_FILE" ;;
+	apply) apply "$2" "$3" "$4" ;;
+	safe-remove) safe_remove "$2" ;;
+	disable-extroot) disable_extroot ;;
+	language) [ "$2" = fa ] || [ "$2" = en ] || exit 2; uci set afzoon.main.language="$2"; uci commit afzoon; echo '{"ok":true}' ;;
+	*) echo 'Usage: afzoonctl status|apply DEVICE SWAP_MIB EXTROOT_MIB|safe-remove DEVICE'; exit 2 ;;
+esac
