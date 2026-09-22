@@ -68,7 +68,7 @@ status() {
 	devices=''; first=1
 	for x in /sys/block/sd*; do [ -e "$x" ] || continue; b=$(basename "$x"); usb_block "/dev/$b" || continue; [ $first -eq 1 ] || devices="$devices,"; first=0; devices="$devices$(device_json "$b")"; done
 	lang=$(uci -q get afzoon.main.language); [ -n "$lang" ] || lang=en
-	printf '{"version":"1.0.0","language":"%s","system":%s,"devices":[%s],"last_event":"%s"}\n' "$(json_quote "$lang")" "$(system_json)" "$devices" "$(json_quote "$(cat "$STATE_DIR/event" 2>/dev/null)")"
+	printf '{"version":"1.0.1","language":"%s","system":%s,"devices":[%s],"last_event":"%s"}\n' "$(json_quote "$lang")" "$(system_json)" "$devices" "$(json_quote "$(cat "$STATE_DIR/event" 2>/dev/null)")"
 }
 
 set_fstab() {

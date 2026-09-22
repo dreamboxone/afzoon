@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-afzoon
-PKG_VERSION:=1.0.0
+PKG_VERSION:=1.0.1
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 PKG_MAINTAINER:=dreamboxone
@@ -34,7 +34,7 @@ endef
 
 define Package/luci-app-afzoon/install
 	$(INSTALL_DIR) $(1)/etc/config $(1)/etc/hotplug.d/block $(1)/etc/init.d
-	$(INSTALL_DIR) $(1)/usr/sbin $(1)/www/luci-static/resources/view/afzoon
+	$(INSTALL_DIR) $(1)/usr/sbin $(1)/www/luci-static/resources/view/afzoon/fonts
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d $(1)/usr/share/luci/menu.d
 	$(INSTALL_CONF) ./files/etc/config/afzoon $(1)/etc/config/afzoon
 	$(INSTALL_BIN) ./files/usr/sbin/afzoonctl $(1)/usr/sbin/afzoonctl
@@ -43,6 +43,8 @@ define Package/luci-app-afzoon/install
 	$(INSTALL_DATA) ./files/usr/share/rpcd/acl.d/luci-app-afzoon.json $(1)/usr/share/rpcd/acl.d/luci-app-afzoon.json
 	$(INSTALL_DATA) ./files/usr/share/luci/menu.d/luci-app-afzoon.json $(1)/usr/share/luci/menu.d/luci-app-afzoon.json
 	$(INSTALL_DATA) ./files/www/luci-static/resources/view/afzoon/overview.js $(1)/www/luci-static/resources/view/afzoon/overview.js
+	$(INSTALL_DATA) ./files/www/luci-static/resources/view/afzoon/fonts/Vazirmatn.woff2 $(1)/www/luci-static/resources/view/afzoon/fonts/Vazirmatn.woff2
+	$(INSTALL_DATA) ./files/www/luci-static/resources/view/afzoon/fonts/OFL.txt $(1)/www/luci-static/resources/view/afzoon/fonts/OFL.txt
 endef
 
 $(eval $(call BuildPackage,luci-app-afzoon))

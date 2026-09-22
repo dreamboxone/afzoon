@@ -2,6 +2,7 @@
   "luci-app-afzoon": {
     "description": "Grant Afzoon LuCI page access to its local management command",
     "read": {
+      "uci": [ "afzoon" ],
       "ubus": {
         "session": [ "access" ],
         "file": [ "exec" ]
@@ -9,6 +10,7 @@
     },
     "write": {
       "cgi-io": [ "exec" ],
+      "uci": [ "afzoon" ],
       "ubus": {
         "file": [ "exec" ]
       },
