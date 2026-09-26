@@ -88,7 +88,7 @@ status() {
 	devices=''; first=1
 	for x in /sys/block/sd*; do [ -e "$x" ] || continue; b=$(basename "$x"); usb_block "/dev/$b" || continue; [ $first -eq 1 ] || devices="$devices,"; first=0; devices="$devices$(device_json "$b")"; done
 	lang=$(uci -q get afzoon.main.language); [ -n "$lang" ] || lang=en
-	printf '{"version":"1.0.4","language":"%s","system":%s,"devices":[%s],"last_event":"%s"}\n' "$(json_quote "$lang")" "$(system_json)" "$devices" "$(json_quote "$(cat "$STATE_DIR/event" 2>/dev/null)")"
+	printf '{"version":"1.0.5","language":"%s","system":%s,"devices":[%s],"last_event":"%s"}\n' "$(json_quote "$lang")" "$(system_json)" "$devices" "$(json_quote "$(cat "$STATE_DIR/event" 2>/dev/null)")"
 }
 
 set_fstab() {
@@ -100,16 +100,25 @@ set_fstab() {
 	uci commit fstab
 }
 
+overlay_ready() {
+	[ -d /overlay ] && awk '$2=="/overlay" {found=1} END {exit !found}' /proc/mounts
+}
+
 apply() {
 	dev=$1; swap_mib=$2; root_mib=$3
 	usb_block "$dev" || { reply_error 'USB device not found'; return; }
-	awk '$2=="/overlay" {print $1}' /proc/mounts | grep -q "$(dev_base "$dev")" && { reply_error 'Active extroot: reboot from internal storage before repartitioning'; return; }
+	awk '$2=="/overlay" || $2=="/" {print $1}' /proc/mounts | grep -q "$(dev_base "$dev")" && { reply_error 'Active extroot: reboot from internal storage before repartitioning'; return; }
 	is_uint "$swap_mib" && is_uint "$root_mib" || { reply_error 'Invalid size'; return; }
 	[ "$swap_mib" -gt 0 ] || [ "$root_mib" -gt 0 ] || { reply_error 'Choose swap and/or extroot'; return; }
 	b=$(dev_base "$dev"); sectors=$(cat "/sys/block/$b/size"); total=$((sectors / 2048)); used=$((swap_mib + root_mib))
 	[ "$used" -le $((total - 16)) ] || { reply_error 'Requested space exceeds device capacity'; return; }
 	command -v parted >/dev/null || { reply_error 'parted is required'; return; }
 	command -v mkfs.ext4 >/dev/null || { reply_error 'e2fsprogs is required'; return; }
+	if [ "$root_mib" -gt 0 ]; then
+		overlay_ready || { reply_error 'Extroot requires a mounted /overlay on this firmware; no partitions were changed'; return; }
+		internal_overlay_mib=$(df -k /overlay 2>/dev/null | awk 'NR==2 && $2 ~ /^[0-9]+$/ {print int($2/1024)}')
+		is_uint "$internal_overlay_mib" || { reply_error 'Cannot read overlay capacity; no partitions were changed'; return; }
+	fi
 	# This command intentionally erases the selected USB disk; UI confirmation is mandatory.
 	swapoff "${dev}"* 2>/dev/null; umount "${dev}"* 2>/dev/null
 	parted -s "$dev" mklabel gpt || { reply_error 'Partition table creation failed'; return; }
@@ -124,7 +133,7 @@ apply() {
 	[ -n "$swap_part" ] && swap_uuid=$(block_value "$swap_part" UUID)
 	[ -n "$root_uuid" ] || [ -z "$root_part" ] || { reply_error 'Extroot UUID could not be read'; return; }
 	[ -n "$swap_uuid" ] || [ -z "$swap_part" ] || { reply_error 'Swap UUID could not be read'; return; }
-	uci set afzoon.main.internal_overlay_mib="$(df -k /overlay | awk 'NR==2 {print int($2/1024)}')"; uci commit afzoon
+	if [ "$root_mib" -gt 0 ]; then uci set afzoon.main.internal_overlay_mib="$internal_overlay_mib"; uci commit afzoon; fi
 	set_fstab "$dev" "$swap_uuid" "$root_uuid"
 	if [ -n "$root_part" ]; then mkdir -p /tmp/afzoon-extroot; mount "$root_part" /tmp/afzoon-extroot || { reply_error 'Cannot mount new extroot'; return; }; tar -C /overlay -cpf - . | tar -C /tmp/afzoon-extroot -xpf - || { umount /tmp/afzoon-extroot 2>/dev/null; reply_error 'Extroot data copy failed'; return; }; sync; umount /tmp/afzoon-extroot || { reply_error 'Cannot unmount new extroot'; return; }; fi
 	[ -n "$swap_part" ] && swapon "$swap_part"

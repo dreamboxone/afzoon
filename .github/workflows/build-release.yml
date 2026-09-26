@@ -44,6 +44,7 @@ jobs:
           sh -n scripts/build-package.sh
           node --check files/www/luci-static/resources/view/afzoon/overview.js
           node scripts/test-luci-apply.js
+          node scripts/test-overlay-preflight.js
           chmod +x scripts/test-apply-job.sh
           sh scripts/test-apply-job.sh
           AFZOON_TEST_RESULT=failure sh scripts/test-apply-job.sh
