@@ -3,6 +3,7 @@
 'require fs';
 'require ui';
 'require poll';
+'require request';
 
 var dictionary = {
 	en: {
@@ -13,7 +14,20 @@ var dictionary = {
 	}
 };
 
-function cmd(args) { return fs.exec_direct('/usr/sbin/afzoonctl', args, 'json'); }
+function cmd(args) {
+	if (args[0] !== 'apply') return fs.exec_direct('/usr/sbin/afzoonctl', args, 'json');
+	var command = [ '/usr/sbin/afzoonctl' ].concat(args).map(function(arg) {
+		return String(arg).replace(/\\/g, '\\\\').replace(/(\s)/g, '\\$1');
+	}).join(' ');
+	return request.post(L.env.cgi_base + '/cgi-exec',
+		'sessionid=' + encodeURIComponent(L.env.sessionid) + '&command=' + encodeURIComponent(command) + '&stderr=0', {
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			timeout: 600000
+		}).then(function(res) {
+			if (!res.ok) throw new Error(res.statusText);
+			return res.json();
+		});
+}
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
 function number(value) { return (Number(value) || 0).toFixed(2); }
 function bar(label, value, total, color, t) {
@@ -66,7 +80,15 @@ return view.extend({
 		var eject = E('button', { 'class': 'btn cbi-button cbi-button-negative', 'click': function() { var d = current(); if (!confirm(t.removeWarning + '\n' + d.path)) return; cmd([ 'safe-remove', d.path ]).then(function(r) { ui.addNotification(null, E('p', {}, r.ok ? t.done : t.error + ': ' + r.error), r.ok ? 'info' : 'error'); }); } }, t.safe);
 		var disable = E('button', { 'class': 'btn cbi-button', 'click': function() { if (!confirm(t.disabled)) return; cmd([ 'disable-extroot' ]).then(function(r) { ui.addNotification(null, E('p', {}, r.ok ? t.disabled : t.error), r.ok ? 'info' : 'error'); }); } }, t.disable);
 		section.appendChild(E('div', { 'class': 'afzoon-actions' }, [ apply, eject, disable ])); root.appendChild(section);
-		poll.add(function() { return self.load().then(function(next) { data.devices = next.devices; data.system = next.system; if (!next.devices.some(function(d) { return d.path === select.value; })) root.replaceWith(self.render(next)); }); }, 5);
+		poll.add(function refreshStatus() {
+			if (!root.isConnected) { poll.remove(refreshStatus); return; }
+			if (apply.disabled) return;
+			return self.load().then(function(next) {
+				data.devices = next.devices;
+				data.system = next.system;
+				if (!next.devices.some(function(d) { return d.path === select.value; })) root.replaceWith(self.render(next));
+			}).catch(function() {});
+		}, 5);
 		return root;
 	},
 	handleSaveApply: null,

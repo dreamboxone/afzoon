@@ -7,6 +7,7 @@ mkdir -p "$STATE_DIR"
 
 json_quote() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\n/ /g'; }
 is_uint() { case "$1" in ''|*[!0-9]*) return 1;; *) return 0;; esac; }
+reply_error() { printf '{"ok":false,"error":"%s"}\n' "$(json_quote "$1")"; return 0; }
 dev_base() { basename "$1" | sed 's/[0-9]*$//'; }
 block_value() { block info "$1" 2>/dev/null | sed -n "s/.* $2=\"\([^\"]*\)\".*/\1/p" | head -n1; }
 
@@ -85,7 +86,7 @@ status() {
 	devices=''; first=1
 	for x in /sys/block/sd*; do [ -e "$x" ] || continue; b=$(basename "$x"); usb_block "/dev/$b" || continue; [ $first -eq 1 ] || devices="$devices,"; first=0; devices="$devices$(device_json "$b")"; done
 	lang=$(uci -q get afzoon.main.language); [ -n "$lang" ] || lang=en
-	printf '{"version":"1.0.2","language":"%s","system":%s,"devices":[%s],"last_event":"%s"}\n' "$(json_quote "$lang")" "$(system_json)" "$devices" "$(json_quote "$(cat "$STATE_DIR/event" 2>/dev/null)")"
+	printf '{"version":"1.0.3","language":"%s","system":%s,"devices":[%s],"last_event":"%s"}\n' "$(json_quote "$lang")" "$(system_json)" "$devices" "$(json_quote "$(cat "$STATE_DIR/event" 2>/dev/null)")"
 }
 
 set_fstab() {
@@ -99,43 +100,43 @@ set_fstab() {
 
 apply() {
 	dev=$1; swap_mib=$2; root_mib=$3
-	usb_block "$dev" || { echo '{"ok":false,"error":"USB device not found"}'; return 1; }
-	awk '$2=="/overlay" {print $1}' /proc/mounts | grep -q "$(dev_base "$dev")" && { echo '{"ok":false,"error":"Active extroot: reboot from internal storage before repartitioning"}'; return 1; }
-	is_uint "$swap_mib" && is_uint "$root_mib" || { echo '{"ok":false,"error":"Invalid size"}'; return 1; }
-	[ "$swap_mib" -gt 0 ] || [ "$root_mib" -gt 0 ] || { echo '{"ok":false,"error":"Choose swap and/or extroot"}'; return 1; }
+	usb_block "$dev" || { reply_error 'USB device not found'; return; }
+	awk '$2=="/overlay" {print $1}' /proc/mounts | grep -q "$(dev_base "$dev")" && { reply_error 'Active extroot: reboot from internal storage before repartitioning'; return; }
+	is_uint "$swap_mib" && is_uint "$root_mib" || { reply_error 'Invalid size'; return; }
+	[ "$swap_mib" -gt 0 ] || [ "$root_mib" -gt 0 ] || { reply_error 'Choose swap and/or extroot'; return; }
 	b=$(dev_base "$dev"); sectors=$(cat "/sys/block/$b/size"); total=$((sectors / 2048)); used=$((swap_mib + root_mib))
-	[ "$used" -le $((total - 16)) ] || { echo '{"ok":false,"error":"Requested space exceeds device capacity"}'; return 1; }
-	command -v parted >/dev/null || { echo '{"ok":false,"error":"parted is required"}'; return 1; }
-	command -v mkfs.ext4 >/dev/null || { echo '{"ok":false,"error":"e2fsprogs is required"}'; return 1; }
+	[ "$used" -le $((total - 16)) ] || { reply_error 'Requested space exceeds device capacity'; return; }
+	command -v parted >/dev/null || { reply_error 'parted is required'; return; }
+	command -v mkfs.ext4 >/dev/null || { reply_error 'e2fsprogs is required'; return; }
 	# This command intentionally erases the selected USB disk; UI confirmation is mandatory.
 	swapoff "${dev}"* 2>/dev/null; umount "${dev}"* 2>/dev/null
-	parted -s "$dev" mklabel gpt || { echo '{"ok":false,"error":"Partition table creation failed"}'; return 1; }
+	parted -s "$dev" mklabel gpt || { reply_error 'Partition table creation failed'; return; }
 	start=1; n=1; root_part=''; swap_part=''
-	if [ "$root_mib" -gt 0 ]; then end=$((start + root_mib)); parted -s "$dev" mkpart primary ext4 "${start}MiB" "${end}MiB" || return 1; root_part="${dev}${n}"; n=$((n+1)); start=$end; fi
-	if [ "$swap_mib" -gt 0 ]; then end=$((start + swap_mib)); parted -s "$dev" mkpart primary linux-swap "${start}MiB" "${end}MiB" || return 1; swap_part="${dev}${n}"; fi
+	if [ "$root_mib" -gt 0 ]; then end=$((start + root_mib)); parted -s "$dev" mkpart primary ext4 "${start}MiB" "${end}MiB" || { reply_error 'Extroot partition creation failed'; return; }; root_part="${dev}${n}"; n=$((n+1)); start=$end; fi
+	if [ "$swap_mib" -gt 0 ]; then end=$((start + swap_mib)); parted -s "$dev" mkpart primary linux-swap "${start}MiB" "${end}MiB" || { reply_error 'Swap partition creation failed'; return; }; swap_part="${dev}${n}"; fi
 	partprobe "$dev" 2>/dev/null; sleep 2
-	[ -z "$root_part" ] || mkfs.ext4 -F -L afzoon-extroot "$root_part" || { echo '{"ok":false,"error":"Extroot formatting failed"}'; return 1; }
-	[ -z "$swap_part" ] || mkswap -L afzoon-swap "$swap_part" || { echo '{"ok":false,"error":"Swap formatting failed"}'; return 1; }
+	[ -z "$root_part" ] || mkfs.ext4 -F -L afzoon-extroot "$root_part" || { reply_error 'Extroot formatting failed'; return; }
+	[ -z "$swap_part" ] || mkswap -L afzoon-swap "$swap_part" || { reply_error 'Swap formatting failed'; return; }
 	root_uuid=''; swap_uuid=''
 	[ -n "$root_part" ] && root_uuid=$(block_value "$root_part" UUID)
 	[ -n "$swap_part" ] && swap_uuid=$(block_value "$swap_part" UUID)
-	[ -n "$root_uuid" ] || [ -z "$root_part" ] || { echo '{"ok":false,"error":"Extroot formatting failed"}'; return 1; }
-	[ -n "$swap_uuid" ] || [ -z "$swap_part" ] || { echo '{"ok":false,"error":"Swap formatting failed"}'; return 1; }
+	[ -n "$root_uuid" ] || [ -z "$root_part" ] || { reply_error 'Extroot UUID could not be read'; return; }
+	[ -n "$swap_uuid" ] || [ -z "$swap_part" ] || { reply_error 'Swap UUID could not be read'; return; }
 	uci set afzoon.main.internal_overlay_mib="$(df -k /overlay | awk 'NR==2 {print int($2/1024)}')"; uci commit afzoon
 	set_fstab "$dev" "$swap_uuid" "$root_uuid"
-	if [ -n "$root_part" ]; then mkdir -p /tmp/afzoon-extroot; mount "$root_part" /tmp/afzoon-extroot || { echo '{"ok":false,"error":"Cannot mount new extroot"}'; return 1; }; tar -C /overlay -cpf - . | tar -C /tmp/afzoon-extroot -xpf -; sync; umount /tmp/afzoon-extroot; fi
+	if [ -n "$root_part" ]; then mkdir -p /tmp/afzoon-extroot; mount "$root_part" /tmp/afzoon-extroot || { reply_error 'Cannot mount new extroot'; return; }; tar -C /overlay -cpf - . | tar -C /tmp/afzoon-extroot -xpf - || { umount /tmp/afzoon-extroot 2>/dev/null; reply_error 'Extroot data copy failed'; return; }; sync; umount /tmp/afzoon-extroot || { reply_error 'Cannot unmount new extroot'; return; }; fi
 	[ -n "$swap_part" ] && swapon "$swap_part"
 	printf '{"ok":true,"reboot_required":%s}\n' "$([ -n "$root_part" ] && echo true || echo false)"
 }
 
 safe_remove() {
-	dev=$1; usb_block "$dev" || { echo '{"ok":false,"error":"USB device not found"}'; return 1; }
-	awk '$2=="/overlay" {print $1}' /proc/mounts | grep -q "$(dev_base "$dev")" && { echo '{"ok":false,"error":"Active extroot: disable it and reboot before removal"}'; return 1; }
+	dev=$1; usb_block "$dev" || { reply_error 'USB device not found'; return; }
+	awk '$2=="/overlay" {print $1}' /proc/mounts | grep -q "$(dev_base "$dev")" && { reply_error 'Active extroot: disable it and reboot before removal'; return; }
 	swapoff "${dev}"* 2>/dev/null
-	grep -q "^${dev}" /proc/swaps 2>/dev/null && { echo '{"ok":false,"error":"Swap is still busy"}'; return 1; }
+	grep -q "^${dev}" /proc/swaps 2>/dev/null && { reply_error 'Swap is still busy'; return; }
 	for p in "${dev}"*; do
 		grep -q "^$p " /proc/mounts 2>/dev/null || continue
-		umount "$p" 2>/dev/null || { echo '{"ok":false,"error":"A filesystem is still busy"}'; return 1; }
+		umount "$p" 2>/dev/null || { reply_error 'A filesystem is still busy'; return; }
 	done
 	sync
 	b=$(dev_base "$dev"); [ -w "/sys/block/$b/device/delete" ] && echo 1 > "/sys/block/$b/device/delete"
@@ -151,7 +152,7 @@ disable_extroot() {
 case "$1" in
 	status) status | tee "$STATE_FILE" ;;
 	hotplug) printf '%s %s\n' "$2" "$3" > "$STATE_DIR/event"; status > "$STATE_FILE" ;;
-	apply) apply "$2" "$3" "$4" ;;
+	apply) result=$(apply "$2" "$3" "$4" 2>"$STATE_DIR/apply.log"); printf '%s\n' "$result" | tail -n 1 ;;
 	safe-remove) safe_remove "$2" ;;
 	disable-extroot) disable_extroot ;;
 	language) [ "$2" = fa ] || [ "$2" = en ] || exit 2; uci set afzoon.main.language="$2"; uci commit afzoon; echo '{"ok":true}' ;;
