@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.4
+
+- Run Apply in a background worker and return immediately instead of keeping a CGI request open throughout formatting and extroot copying.
+- Poll the operation result with short requests, avoiding web-server time limits on slower USB devices.
+- Prevent overlapping Apply, safe-removal and extroot-disable operations while the worker is active.
+- Preserve formatting output and diagnostics, report stopped workers, and show a meaningful message for an empty router response.
+- Add regression checks for delayed workers, failed operations and LuCI polling.
+
 ## 1.0.3
 
 - Return structured errors for partition creation, formatting and UUID detection failures.

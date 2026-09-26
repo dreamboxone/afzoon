@@ -53,7 +53,7 @@ command -v apk || command -v opkg
 
 ```sh
 opkg update
-opkg install /tmp/luci-app-afzoon_1.0.3-r1_all.ipk
+opkg install /tmp/luci-app-afzoon_1.0.4-r1_all.ipk
 /etc/init.d/rpcd restart
 /etc/init.d/uhttpd restart
 ```
@@ -73,7 +73,7 @@ opkg install kmod-usb-storage kmod-fs-ext4
 
 ```sh
 apk update
-apk add --allow-untrusted /tmp/luci-app-afzoon-1.0.3-r1.apk
+apk add --allow-untrusted /tmp/luci-app-afzoon-1.0.4-r1.apk
 /etc/init.d/rpcd restart
 /etc/init.d/uhttpd restart
 ```
@@ -256,7 +256,7 @@ Copy the downloaded IPK file to `/tmp` on the router with SCP, WinSCP, or LuCI's
 
 ```sh
 opkg update
-opkg install /tmp/luci-app-afzoon_1.0.3-r1_all.ipk
+opkg install /tmp/luci-app-afzoon_1.0.4-r1_all.ipk
 /etc/init.d/rpcd restart
 /etc/init.d/uhttpd restart
 ```
@@ -276,7 +276,7 @@ Copy the downloaded APK file to `/tmp` on the router, connect through SSH, and r
 
 ```sh
 apk update
-apk add --allow-untrusted /tmp/luci-app-afzoon-1.0.3-r1.apk
+apk add --allow-untrusted /tmp/luci-app-afzoon-1.0.4-r1.apk
 /etc/init.d/rpcd restart
 /etc/init.d/uhttpd restart
 ```
@@ -450,6 +450,22 @@ Restart `rpcd`, sign out of LuCI, sign in again, and reload the page:
 /etc/init.d/rpcd restart
 /etc/init.d/uhttpd restart
 ```
+
+### Apply reports an empty response or loses its connection
+
+Version 1.0.4 runs formatting and extroot copying in a background worker, so a long operation does not hold a CGI request open. Upgrade the package and reload the Afzoon page. Before repeating Apply after an error, inspect the operation and disk state:
+
+```sh
+cat /var/run/afzoon/apply-job.json
+cat /var/run/afzoon/apply.log
+cat /var/run/afzoon/apply-output.log
+block info
+uci show fstab
+cat /proc/swaps
+mount | grep ' /overlay '
+```
+
+The original operation may already have changed the disk. An existing ext4 filesystem does not prevent a web-request timeout, and Apply still recreates the selected disk's partitions.
 
 ## Important limitations
 

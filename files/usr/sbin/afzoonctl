@@ -3,6 +3,8 @@
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 STATE_DIR=/var/run/afzoon
 STATE_FILE=$STATE_DIR/status.json
+JOB_LOCK=$STATE_DIR/apply.lock
+JOB_FILE=$STATE_DIR/apply-job.json
 mkdir -p "$STATE_DIR"
 
 json_quote() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\n/ /g'; }
@@ -86,7 +88,7 @@ status() {
 	devices=''; first=1
 	for x in /sys/block/sd*; do [ -e "$x" ] || continue; b=$(basename "$x"); usb_block "/dev/$b" || continue; [ $first -eq 1 ] || devices="$devices,"; first=0; devices="$devices$(device_json "$b")"; done
 	lang=$(uci -q get afzoon.main.language); [ -n "$lang" ] || lang=en
-	printf '{"version":"1.0.3","language":"%s","system":%s,"devices":[%s],"last_event":"%s"}\n' "$(json_quote "$lang")" "$(system_json)" "$devices" "$(json_quote "$(cat "$STATE_DIR/event" 2>/dev/null)")"
+	printf '{"version":"1.0.4","language":"%s","system":%s,"devices":[%s],"last_event":"%s"}\n' "$(json_quote "$lang")" "$(system_json)" "$devices" "$(json_quote "$(cat "$STATE_DIR/event" 2>/dev/null)")"
 }
 
 set_fstab() {
@@ -130,6 +132,7 @@ apply() {
 }
 
 safe_remove() {
+	[ ! -d "$JOB_LOCK" ] || { reply_error 'An Apply operation is already in progress'; return; }
 	dev=$1; usb_block "$dev" || { reply_error 'USB device not found'; return; }
 	awk '$2=="/overlay" {print $1}' /proc/mounts | grep -q "$(dev_base "$dev")" && { reply_error 'Active extroot: disable it and reboot before removal'; return; }
 	swapoff "${dev}"* 2>/dev/null
@@ -144,15 +147,68 @@ safe_remove() {
 }
 
 disable_extroot() {
+	[ ! -d "$JOB_LOCK" ] || { reply_error 'An Apply operation is already in progress'; return; }
 	uci -q delete fstab.afzoon_extroot
 	uci commit fstab
 	echo '{"ok":true,"reboot_required":true}'
 }
 
+start_apply() {
+	case "$1" in /dev/sd[a-z]|/dev/sd[a-z][a-z]) ;; *) reply_error 'Invalid USB device'; return;; esac
+	is_uint "$2" && is_uint "$3" || { reply_error 'Invalid size'; return; }
+	mkdir "$JOB_LOCK" 2>/dev/null || { reply_error 'An Apply operation is already in progress'; return; }
+	job_id="$(date +%s)-$$"
+	printf '%s\n' "$job_id" > "$STATE_DIR/apply-id"
+	printf '{"ok":true,"running":true,"job_id":"%s"}\n' "$job_id" > "$JOB_FILE"
+	(trap '' HUP; exec "$0" apply-worker "$job_id" "$1" "$2" "$3") </dev/null >"$STATE_DIR/apply-worker.log" 2>&1 &
+	printf '{"ok":true,"running":true,"job_id":"%s"}\n' "$job_id"
+}
+
+apply_worker() {
+	job_id=$1; shift
+	[ "$(cat "$STATE_DIR/apply-id" 2>/dev/null)" = "$job_id" ] && [ -d "$JOB_LOCK" ] || { reply_error 'Unknown Apply operation'; return; }
+	trap finish_apply_worker EXIT
+	trap '' HUP
+	trap 'exit 1' INT TERM
+	printf '%s\n' "$$" > "$JOB_LOCK/pid"
+	apply "$1" "$2" "$3" >"$STATE_DIR/apply-output.log" 2>"$STATE_DIR/apply.log"
+	result=$(tail -n 1 "$STATE_DIR/apply-output.log")
+	valid=$(printf '%s\n' "$result" | jsonfilter -e '@.ok' 2>/dev/null)
+	case "$valid" in true|false) ;; *) result='{"ok":false,"error":"Apply stopped without a valid result; inspect /var/run/afzoon/apply.log"}';; esac
+	printf '%s\n' "$result" > "$JOB_FILE.tmp"
+	mv "$JOB_FILE.tmp" "$JOB_FILE"
+}
+
+finish_apply_worker() {
+	if [ "$(jsonfilter -i "$JOB_FILE" -e '@.running' 2>/dev/null)" = true ]; then
+		reply_error 'Apply worker stopped; inspect /var/run/afzoon/apply.log before retrying' > "$JOB_FILE.tmp"
+		mv "$JOB_FILE.tmp" "$JOB_FILE"
+	fi
+	rm -f "$JOB_LOCK/pid"
+	rmdir "$JOB_LOCK" 2>/dev/null
+}
+
+apply_status() {
+	[ "$(cat "$STATE_DIR/apply-id" 2>/dev/null)" = "$1" ] && [ -s "$JOB_FILE" ] || { reply_error 'Unknown Apply operation'; return; }
+	if [ "$(jsonfilter -i "$JOB_FILE" -e '@.running' 2>/dev/null)" = true ] && [ -d "$JOB_LOCK" ]; then
+		worker_pid=$(cat "$JOB_LOCK/pid" 2>/dev/null)
+		if is_uint "$worker_pid" && ! kill -0 "$worker_pid" 2>/dev/null; then
+			if [ "$(jsonfilter -i "$JOB_FILE" -e '@.running' 2>/dev/null)" = true ]; then
+				reply_error 'Apply worker stopped; inspect /var/run/afzoon/apply.log before retrying'
+				return
+			fi
+		fi
+	fi
+	cat "$JOB_FILE"
+}
+
 case "$1" in
 	status) status | tee "$STATE_FILE" ;;
 	hotplug) printf '%s %s\n' "$2" "$3" > "$STATE_DIR/event"; status > "$STATE_FILE" ;;
-	apply) result=$(apply "$2" "$3" "$4" 2>"$STATE_DIR/apply.log"); printf '%s\n' "$result" | tail -n 1 ;;
+	apply) if [ -d "$JOB_LOCK" ]; then reply_error 'An Apply operation is already in progress'; else result=$(apply "$2" "$3" "$4" 2>"$STATE_DIR/apply.log"); printf '%s\n' "$result" | tail -n 1; fi ;;
+	start-apply) start_apply "$2" "$3" "$4" ;;
+	apply-worker) apply_worker "$2" "$3" "$4" "$5" ;;
+	apply-status) apply_status "$2" ;;
 	safe-remove) safe_remove "$2" ;;
 	disable-extroot) disable_extroot ;;
 	language) [ "$2" = fa ] || [ "$2" = en ] || exit 2; uci set afzoon.main.language="$2"; uci commit afzoon; echo '{"ok":true}' ;;

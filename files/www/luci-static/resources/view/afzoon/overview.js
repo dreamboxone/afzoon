@@ -3,7 +3,6 @@
 'require fs';
 'require ui';
 'require poll';
-'require request';
 
 var dictionary = {
 	en: {
@@ -15,18 +14,29 @@ var dictionary = {
 };
 
 function cmd(args) {
-	if (args[0] !== 'apply') return fs.exec_direct('/usr/sbin/afzoonctl', args, 'json');
-	var command = [ '/usr/sbin/afzoonctl' ].concat(args).map(function(arg) {
-		return String(arg).replace(/\\/g, '\\\\').replace(/(\s)/g, '\\$1');
-	}).join(' ');
-	return request.post(L.env.cgi_base + '/cgi-exec',
-		'sessionid=' + encodeURIComponent(L.env.sessionid) + '&command=' + encodeURIComponent(command) + '&stderr=0', {
-			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			timeout: 600000
-		}).then(function(res) {
-			if (!res.ok) throw new Error(res.statusText);
-			return res.json();
+	return fs.exec_direct('/usr/sbin/afzoonctl', args, 'text').then(function(text) {
+		if (!text || !text.trim()) throw new Error('Empty response from router. Check /var/run/afzoon/apply.log before retrying.');
+		return JSON.parse(text);
+	});
+}
+function runApply(args) {
+	return cmd([ 'start-apply' ].concat(args)).then(function(result) {
+		if (!result.ok || !result.running) return result;
+		return new Promise(function(resolve, reject) {
+			var failures = 0;
+			function check() {
+				cmd([ 'apply-status', result.job_id ]).then(function(next) {
+					failures = 0;
+					if (next.running) window.setTimeout(check, 2000);
+					else resolve(next);
+				}).catch(function(error) {
+					if (++failures < 5) window.setTimeout(check, 2000);
+					else reject(error);
+				});
+			}
+			check();
 		});
+	});
 }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
 function number(value) { return (Number(value) || 0).toFixed(2); }
@@ -75,7 +85,7 @@ return view.extend({
 		var apply = E('button', { 'class': 'btn cbi-button cbi-button-apply', 'click': function() {
 			var d = current(), sw = swapCheck.checked ? parseInt(swapInput.value, 10) || 0 : 0, rt = rootCheck.checked ? parseInt(rootInput.value, 10) || 0 : 0;
 			if (!confirm(t.confirm + '\n' + d.path + '\n' + d.brand)) return;
-			apply.disabled = true; cmd([ 'apply', d.path, String(sw), String(rt) ]).then(function(r) { ui.addNotification(null, E('p', {}, r.ok ? (r.reboot_required ? t.reboot : t.done) : t.error + ': ' + r.error), r.ok ? 'info' : 'error'); if (r.ok) self.load().then(function(next) { root.replaceWith(self.render(next)); }); }).catch(function(e) { ui.addNotification(null, E('p', {}, t.error + ': ' + e), 'error'); }).finally(function() { apply.disabled = false; });
+			apply.disabled = true; runApply([ d.path, String(sw), String(rt) ]).then(function(r) { ui.addNotification(null, E('p', {}, r.ok ? (r.reboot_required ? t.reboot : t.done) : t.error + ': ' + r.error), r.ok ? 'info' : 'error'); if (r.ok) self.load().then(function(next) { root.replaceWith(self.render(next)); }); }).catch(function(e) { ui.addNotification(null, E('p', {}, t.error + ': ' + e), 'error'); }).finally(function() { apply.disabled = false; });
 		} }, t.apply);
 		var eject = E('button', { 'class': 'btn cbi-button cbi-button-negative', 'click': function() { var d = current(); if (!confirm(t.removeWarning + '\n' + d.path)) return; cmd([ 'safe-remove', d.path ]).then(function(r) { ui.addNotification(null, E('p', {}, r.ok ? t.done : t.error + ': ' + r.error), r.ok ? 'info' : 'error'); }); } }, t.safe);
 		var disable = E('button', { 'class': 'btn cbi-button', 'click': function() { if (!confirm(t.disabled)) return; cmd([ 'disable-extroot' ]).then(function(r) { ui.addNotification(null, E('p', {}, r.ok ? t.disabled : t.error), r.ok ? 'info' : 'error'); }); } }, t.disable);

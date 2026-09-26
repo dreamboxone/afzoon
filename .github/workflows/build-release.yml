@@ -43,6 +43,12 @@ jobs:
           sh -n files/usr/sbin/afzoonctl
           sh -n scripts/build-package.sh
           node --check files/www/luci-static/resources/view/afzoon/overview.js
+          node scripts/test-luci-apply.js
+          chmod +x scripts/test-apply-job.sh
+          sh scripts/test-apply-job.sh
+          AFZOON_TEST_RESULT=failure sh scripts/test-apply-job.sh
+          AFZOON_TEST_RESULT=invalid sh scripts/test-apply-job.sh
+          AFZOON_TEST_DELAY=65 sh scripts/test-apply-job.sh
           jq empty files/usr/share/rpcd/acl.d/luci-app-afzoon.json
           jq empty files/usr/share/luci/menu.d/luci-app-afzoon.json
           version=$(sed -n 's/^PKG_VERSION:=//p' Makefile)
