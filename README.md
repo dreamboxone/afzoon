@@ -1,5 +1,9 @@
 # Afzoon
 
+[![Build and release](https://github.com/dreamboxone/afzoon/actions/workflows/build-release.yml/badge.svg)](https://github.com/dreamboxone/afzoon/actions/workflows/build-release.yml)
+
+GitHub Actions builds both IPK and APK packages on pushes to `main`, pull requests, and manual runs. Pushing a `v<PKG_VERSION>` tag builds and publishes both packages with `SHA256SUMS`. Manual runs from an existing version tag can retry its build and release. SDK downloads are checked against pinned SHA-256 values; package contents are compared with the source before publication.
+
 ## راهنمای فارسی
 
 افزون یک برنامهٔ دو‌زبانه برای LuCI است که حافظه‌های USB، سواپ پایدار و افزایش فلش دستگاه را در OpenWrt مدیریت می‌کند. زبان پیش‌فرض رابط انگلیسی است و از بالای صفحه می‌توان آن را به فارسی تغییر داد.

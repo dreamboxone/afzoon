@@ -13,7 +13,7 @@ cp -a "$SOURCE/Makefile" "$SOURCE/files" "$DEST/"
 
 make -C "$SDK" defconfig
 make -C "$SDK" package/afzoon/clean
-make -C "$SDK" package/afzoon/compile CONFIG_PACKAGE_luci-app-afzoon=m V=s
+make -C "$SDK" package/afzoon/compile CONFIG_PACKAGE_luci-app-afzoon=m NO_DEPS=1 V=s
 
 ARTIFACTS=$(find "$SDK/bin/packages" -type f \( -name 'luci-app-afzoon_*.ipk' -o -name 'luci-app-afzoon-*.apk' \) -print)
 [ -n "$ARTIFACTS" ] || { echo "Afzoon package was not produced" >&2; exit 1; }

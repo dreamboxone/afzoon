@@ -1,0 +1,133 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: afzoon-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.format }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - format: ipk
+            release: '24.10.8'
+            target: ipq40xx/generic
+            archive: openwrt-sdk-24.10.8-ipq40xx-generic_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
+            sha256: b1b6a4a0d18305431c005af5b3750bedcdc4f5578eb757c53a4ce5956337f9f2
+          - format: apk
+            release: '25.12.5'
+            target: ipq40xx/chromium
+            archive: openwrt-sdk-25.12.5-ipq40xx-chromium_gcc-14.3.0_musl_eabi.Linux-x86_64.tar.zst
+            sha256: 09fec3a23a8cac4156bc976550a71542abdf0abf7e9aba0a6e869b9c0184e637
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check source and version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          sh -n files/usr/sbin/afzoonctl
+          sh -n scripts/build-package.sh
+          node --check files/www/luci-static/resources/view/afzoon/overview.js
+          jq empty files/usr/share/rpcd/acl.d/luci-app-afzoon.json
+          jq empty files/usr/share/luci/menu.d/luci-app-afzoon.json
+          version=$(sed -n 's/^PKG_VERSION:=//p' Makefile)
+          grep -F '"version":"'"$version"'"' files/usr/sbin/afzoonctl
+          if [ "$REF_TYPE" = tag ]; then test "$REF_NAME" = "v$version"; fi
+      - name: Install SDK requirements
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison gawk gettext git libncurses-dev libssl-dev python3 python3-setuptools rsync unzip zstd file wget
+      - name: Download verified SDK
+        env:
+          SDK_RELEASE: ${{ matrix.release }}
+          SDK_TARGET: ${{ matrix.target }}
+          SDK_ARCHIVE: ${{ matrix.archive }}
+          SDK_SHA256: ${{ matrix.sha256 }}
+        run: |
+          curl --fail --location --retry 3 "https://downloads.openwrt.org/releases/$SDK_RELEASE/targets/$SDK_TARGET/$SDK_ARCHIVE" -o "$RUNNER_TEMP/sdk.tar.zst"
+          printf '%s  %s\n' "$SDK_SHA256" "$RUNNER_TEMP/sdk.tar.zst" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/sdk"
+          tar --zstd -xf "$RUNNER_TEMP/sdk.tar.zst" --strip-components=1 -C "$RUNNER_TEMP/sdk"
+      - name: Prepare feeds
+        working-directory: ${{ runner.temp }}/sdk
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+      - name: Build package
+        run: sh scripts/build-package.sh "$RUNNER_TEMP/sdk"
+      - name: Verify and collect package
+        env:
+          FORMAT: ${{ matrix.format }}
+        run: |
+          set -eu
+          version=$(sed -n 's/^PKG_VERSION:=//p' Makefile)
+          release=$(sed -n 's/^PKG_RELEASE:=//p' Makefile)
+          if [ "$FORMAT" = ipk ]; then
+            filename="luci-app-afzoon_${version}-r${release}_all.ipk"
+          else
+            filename="luci-app-afzoon-${version}-r${release}.apk"
+          fi
+          package=$(find "$RUNNER_TEMP/sdk/bin/packages" -name "$filename" -type f)
+          test -f "$package"
+          mkdir -p dist "$RUNNER_TEMP/verify"
+          cp "$package" "dist/$filename"
+          if [ "$FORMAT" = ipk ]; then
+            tar -xzf "$package" -C "$RUNNER_TEMP/verify"
+            tar -xzf "$RUNNER_TEMP/verify/data.tar.gz" -C "$RUNNER_TEMP/verify"
+          else
+            "$RUNNER_TEMP/sdk/staging_dir/host/bin/apk" extract --allow-untrusted --destination "$RUNNER_TEMP/verify" "$package"
+          fi
+          cmp files/usr/sbin/afzoonctl "$RUNNER_TEMP/verify/usr/sbin/afzoonctl"
+          cmp files/www/luci-static/resources/view/afzoon/overview.js "$RUNNER_TEMP/verify/www/luci-static/resources/view/afzoon/overview.js"
+          test -x "$RUNNER_TEMP/verify/usr/sbin/afzoonctl"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: afzoon-${{ matrix.format }}
+          path: dist/*.${{ matrix.format }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: afzoon-*
+          merge-multiple: true
+          path: dist
+      - name: Publish both packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          test "$(find dist -name '*.ipk' | wc -l)" -eq 1
+          test "$(find dist -name '*.apk' | wc -l)" -eq 1
+          (cd dist && sha256sum *.ipk *.apk > SHA256SUMS)
+          sed -n '/^## /,$p' CHANGELOG.md | sed '1d; /^## /,$d' > "$RUNNER_TEMP/release-notes.md"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/*.ipk dist/*.apk dist/SHA256SUMS --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/*.ipk dist/*.apk dist/SHA256SUMS --verify-tag --title "Afzoon ${RELEASE_TAG#v}" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
